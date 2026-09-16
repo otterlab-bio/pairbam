@@ -1,0 +1,150 @@
+name: pairbam CI
+
+on:
+  push:
+    branches: [ master, main ]
+  pull_request:
+    branches: [ master, main ]
+
+jobs:
+  test-and-bam-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+          cache: true
+
+      - name: Run Go quality gates
+        run: |
+          go mod download
+          go test -count=1 ./...
+          go vet ./...
+          go test -race -count=1 ./...
+
+      - name: Run vulnerability scan
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          "$(go env GOPATH)/bin/govulncheck" ./...
+
+      - name: Install samtools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y samtools
+
+      - name: Build pairbam
+        run: |
+          CGO_ENABLED=0 go build -o ./pairbam ./cmd/pairbam
+
+      - name: Generate test BAM
+        run: |
+          cat > "$RUNNER_TEMP/gen_pairbam_input.go" <<'EOF'
+          package main
+
+          import (
+          	"log"
+          	"os"
+
+            bamnative "github.com/otterlab-bio/pairbam/bamnative"
+          )
+
+          func main() {
+          	if len(os.Args) != 2 {
+          		log.Fatal("usage: gen <output.bam>")
+          	}
+          	out := os.Args[1]
+          	h := &bamnative.Header{
+          		SortOrder: "coordinate",
+          		References: []*bamnative.Reference{
+          			{ID: 0, Name: "chr1", Len: 1000},
+          		},
+          	}
+          	w, err := bamnative.NewWriter(out, h)
+          	if err != nil {
+          		log.Fatal(err)
+          	}
+          	recs := []*bamnative.Record{
+          		{
+          			Name:      "pair1",
+          			Flags:     bamnative.FlagPaired | bamnative.FlagProperPair | bamnative.FlagFirstInPair,
+          			RefID:     0,
+          			Pos:       100,
+          			MapQ:      60,
+          			Cigar:     []bamnative.CigarOp{{Op: bamnative.CigarMatch, Len: 5}},
+          			MateRefID: 0,
+          			MatePos:   150,
+          			TLen:      55,
+          			Seq:       "ACGTN",
+          			Qual:      []byte{30, 30, 30, 30, 30},
+          		},
+          		{
+          			Name:      "pair1",
+          			Flags:     bamnative.FlagPaired | bamnative.FlagProperPair | bamnative.FlagSecondInPair,
+          			RefID:     0,
+          			Pos:       150,
+          			MapQ:      60,
+          			Cigar:     []bamnative.CigarOp{{Op: bamnative.CigarMatch, Len: 5}},
+          			MateRefID: 0,
+          			MatePos:   100,
+          			TLen:      -55,
+          			Seq:       "TGCAN",
+          			Qual:      []byte{30, 30, 30, 30, 30},
+          		},
+          	}
+          	for _, r := range recs {
+          		if err := w.Write(r); err != nil {
+          			log.Fatal(err)
+          		}
+          	}
+          	if err := w.Close(); err != nil {
+          		log.Fatal(err)
+          	}
+          }
+          EOF
+          go run "$RUNNER_TEMP/gen_pairbam_input.go" "$RUNNER_TEMP/input.bam"
+
+      - name: BAM compatibility gate
+        run: |
+          set -euo pipefail
+          IN_BAM="$RUNNER_TEMP/input.bam"
+          OUT_BAM="$RUNNER_TEMP/output.bam"
+
+          samtools quickcheck "$IN_BAM"
+          samtools view -H "$IN_BAM" >/dev/null
+          samtools view -c "$IN_BAM" >/dev/null
+
+          ./pairbam --coord-sort "$IN_BAM" "$OUT_BAM"
+
+          test -f "$OUT_BAM"
+          test -f "$OUT_BAM.bai"
+          samtools quickcheck "$OUT_BAM"
+          samtools view -H "$OUT_BAM" >/dev/null
+          test "$(samtools view -c "$OUT_BAM")" -eq 2
+          samtools view -H "$OUT_BAM" |
+            awk '$1 == "@HD" && $0 !~ /SO:coordinate/ { exit 1 }'
+          FIRST_REF="$(
+            samtools view -H "$OUT_BAM" |
+            awk '$1 == "@SQ" { sub(/^SN:/, "", $2); print $2; exit }'
+          )"
+          test -n "$FIRST_REF"
+          samtools view "$OUT_BAM" "${FIRST_REF}:1-1000" >/dev/null
+
+      - name: Job summary
+        if: always()
+        continue-on-error: true
+        run: |
+          bash scripts/ci/job-summary.sh \
+            --verdict "${{ job.status }}" \
+            --title "pairbam — unit contract and BAM compatibility" \
+            --checked "Runs the Go quality gates and vulnerability scan, then a synthetic-BAM compatibility gate: a fixture built by a small Go generator is filtered with --coord-sort and validated with samtools." \
+            --check "Go quality gates|gofmt, vet and tests pass|see step log|-" \
+            --check "Vulnerability scan|govulncheck reports no reachable issue|see step log|-" \
+            --check "Coordinate-sorted output|SO:coordinate in the header|see step log|-" \
+            --check "BAI index written|output.bam.bai present|see step log|-" \
+            --check "Regional query works|samtools view on the first reference interval|see step log|-" \
+            --limit "Unit-level and synthetic-BAM coverage. Real-fixture mate integrity, including the incomplete-mate negative control, is asserted by the Gate B workflow." \
+            --note "The BAM is generated in-run rather than downloaded so this job cannot be affected by fixture availability."

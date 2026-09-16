@@ -1,0 +1,54 @@
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool
+*.out
+
+# Go workspace file
+go.work
+
+# Dependency directories
+vendor/
+
+# Build artifacts
+*.bam
+*.bam.bai
+*.sam
+
+# Test data
+testdata/*
+!testdata/ci/
+!testdata/ci/*.yaml
+test_*.bam
+test_*.txt
+
+# IDE specific files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS specific files
+.DS_Store
+Thumbs.db
+
+# Claude settings
+.claude/
+
+# Temporary files
+*.tmp
+*.temp
+_sorted.bam
+/pairbam
+
+# Python bytecode from the Gate B fixture helper
+__pycache__/
+*.pyc
