@@ -44,17 +44,24 @@ A shared read name means name intersection. It does not, by itself, prove SAM `F
 
 Without `--coord-sort`, outputs are query-name sorted and no BAI index is written. With `--coord-sort`, outputs are coordinate sorted and indexed.
 
-For dual input with prefix `filtered`, the output family is:
+For dual input with prefix `filtered`, query-name output is:
 
 ```text
 filtered_R1.bam
-filtered_R1.bam.bai
 filtered_R2.bam
-filtered_R2.bam.bai
 filtered_filtered_readnames.txt
 ```
 
-The filtered-name file records names that were not shared between the two inputs. Publication is staged transactionally so partial BAM/BAI output is not presented as a completed result.
+With `--coord-sort`, each BAM also has its coordinate index:
+
+```text
+filtered_R1.bam.bai
+filtered_R2.bam.bai
+```
+
+The filtered-name file records names that were not shared between the two inputs. A name that **is** shared but does not have exactly one primary alignment in each input is an error: dual-input processing fails rather than silently filtering an ambiguous name. Publication is staged transactionally so partial BAM/BAI output is not presented as a completed result.
+
+Single-input mode writes the same family: `<output stem>.bam`, an optional `.bai`, and `<output stem>_filtered_readnames.txt` listing the incomplete or non-unique name groups that were removed.
 
 ## Gate B reproducibility check
 
@@ -99,6 +106,16 @@ The tool writes only eligible primary records. Secondary, supplementary, and unm
 - Single-input processing keeps only the current read-name group.
 - Dual-input processing keeps one group per input while streaming the name intersection.
 - BAM, BAI, and filtered-name files are staged before publication.
+
+## Companion tool
+
+`cmd/paircompare` is a verification CLI used by the Gate B evidence scripts and available for manual output audits. It validates a pairbam run against its name-sorted input and writes a JSON report; `paircompare sort-name` query-name-sorts a BAM:
+
+```bash
+go build -o paircompare ./cmd/paircompare
+paircompare --input name_sorted_input.bam --output filtered.bam   --filtered-names filtered_filtered_readnames.txt --report report.json
+paircompare sort-name --input unsorted.bam --output sorted.bam --temporary ./tmp
+```
 
 ## Development
 
